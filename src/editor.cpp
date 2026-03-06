@@ -1,7 +1,9 @@
 #include "editor.hpp"
 #include <ncurses.h>
 #include <algorithm>
+#include <climits>
 #include <cstdio>
+#include <map>
 
 static constexpr int SCROLL_MARGIN = 3;
 
@@ -72,6 +74,17 @@ void Editor::normal_key(int key) {
         if (key == pending_key) {
             if (pending_key == 'd') do_dd();
             else if (pending_key == 'y') do_yy();
+            else if (pending_key == 'g') {
+                int min_y = INT_MAX;
+                for (auto& [pos, cell] : canvas)
+                    if (pos.second < min_y) min_y = pos.second;
+                cursor.y = (min_y == INT_MAX) ? 0 : min_y;
+                cursor.x = 0;
+                ensure_visible();
+            } else if (pending_key == 'z') {
+                vp.x = cursor.x - vp.w / 2;
+                vp.y = cursor.y - (vp.h - 1) / 2;
+            }
         }
         pending_key = 0;
         return;
@@ -151,6 +164,68 @@ void Editor::normal_key(int key) {
                 ensure_visible();
             }
             break;
+
+        // Viewport pan — detach from cursor
+        case 'H': vp.x--; break;
+        case 'L': vp.x++; break;
+        case 'K': vp.y--; break;
+        case 'J': vp.y++; break;
+
+        // Jump to bottom of content
+        case 'G': {
+            int max_y = INT_MIN;
+            for (auto& [pos, cell] : canvas)
+                if (pos.second > max_y) max_y = pos.second;
+            cursor.y = (max_y == INT_MIN) ? 0 : max_y;
+            cursor.x = 0;
+            ensure_visible();
+            break;
+        }
+
+        // Start / end of line
+        case '0':
+            cursor.x = 0;
+            ensure_visible();
+            break;
+        case '$': {
+            int max_x = INT_MIN;
+            for (auto& [pos, cell] : canvas)
+                if (pos.second == cursor.y && pos.first > max_x) max_x = pos.first;
+            if (max_x != INT_MIN) { cursor.x = max_x; ensure_visible(); }
+            break;
+        }
+
+        // Half-page scroll
+        case 4: { // Ctrl+d
+            int half = (vp.h - 1) / 2;
+            cursor.y += half;
+            vp.y    += half;
+            break;
+        }
+        case 21: { // Ctrl+u
+            int half = (vp.h - 1) / 2;
+            cursor.y -= half;
+            vp.y    -= half;
+            break;
+        }
+
+        // Double-key prefixes
+        case 'g': pending_key = 'g'; break;
+        case 'z': pending_key = 'z'; break;
+
+        // Search
+        case '/':
+            search_buf.clear();
+            search_forward = true;
+            mode = Mode::SEARCH;
+            break;
+        case '?':
+            search_buf.clear();
+            search_forward = false;
+            mode = Mode::SEARCH;
+            break;
+        case 'n': do_find_next(search_forward);  break;
+        case 'N': do_find_next(!search_forward); break;
 
         case 'q':
             running = false;
@@ -277,6 +352,83 @@ void Editor::execute_command(const std::string& cmd) {
     }
 }
 
+void Editor::search_key(int key) {
+    switch (key) {
+        case 27: // Escape
+            mode = Mode::NORMAL;
+            status_msg.clear();
+            break;
+        case '\n': case KEY_ENTER: {
+            last_search = search_buf;
+            mode = Mode::NORMAL;
+            if (!last_search.empty() && !do_find_next(search_forward))
+                status_msg = "Pattern not found: " + last_search;
+            break;
+        }
+        case KEY_BACKSPACE: case 127:
+            if (search_buf.empty())
+                mode = Mode::NORMAL;
+            else
+                search_buf.pop_back();
+            break;
+        default:
+            if (key >= 32 && key <= 126)
+                search_buf += (char)key;
+            break;
+    }
+}
+
+bool Editor::do_find_next(bool forward) {
+    if (last_search.empty()) return false;
+
+    // Build per-row sorted content
+    std::map<int, std::map<int, char>> rows;
+    for (auto& [pos, cell] : canvas)
+        rows[pos.second][pos.first] = cell.ch;
+
+    if (rows.empty()) return false;
+
+    // Collect all match positions (y, x) across the canvas
+    std::vector<std::pair<int,int>> matches;
+    for (auto& [y, row] : rows) {
+        if (row.empty()) continue;
+        int min_x = row.begin()->first;
+        int max_x = row.rbegin()->first;
+        std::string s(max_x - min_x + 1, ' ');
+        for (auto& [x, ch] : row) s[x - min_x] = ch;
+
+        size_t p = 0;
+        while ((p = s.find(last_search, p)) != std::string::npos) {
+            matches.push_back({y, min_x + (int)p});
+            p++;
+        }
+    }
+
+    if (matches.empty()) {
+        status_msg = "Pattern not found: " + last_search;
+        return false;
+    }
+
+    std::sort(matches.begin(), matches.end());
+    std::pair<int,int> cur = {cursor.y, cursor.x};
+
+    if (forward) {
+        auto it = std::upper_bound(matches.begin(), matches.end(), cur);
+        if (it == matches.end()) { status_msg = "search wrapped"; it = matches.begin(); }
+        cursor.y = it->first;
+        cursor.x = it->second;
+    } else {
+        auto it = std::lower_bound(matches.begin(), matches.end(), cur);
+        if (it == matches.begin()) { status_msg = "search wrapped"; it = matches.end(); }
+        --it;
+        cursor.y = it->first;
+        cursor.x = it->second;
+    }
+
+    ensure_visible();
+    return true;
+}
+
 void Editor::handle_key(int key) {
     if (key == KEY_RESIZE) { ensure_visible(); return; }
     if (key == 3)          { running = false;  return; } // Ctrl+C
@@ -285,5 +437,6 @@ void Editor::handle_key(int key) {
         case Mode::INSERT:  insert_key(key);  break;
         case Mode::VISUAL:  visual_key(key);  break;
         case Mode::COMMAND: command_key(key); break;
+        case Mode::SEARCH:  search_key(key);  break;
     }
 }

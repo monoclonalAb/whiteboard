@@ -64,6 +64,12 @@ void Renderer::render(const Editor& ed) {
         mvaddstr(ed.vp.h - 1, 0, cmd_line.c_str());
         attroff(A_REVERSE);
         move(ed.vp.h - 1, (int)cmd_line.size());
+    } else if (ed.mode == Mode::SEARCH) {
+        char prefix = ed.search_forward ? '/' : '?';
+        std::string search_line = prefix + ed.search_buf;
+        mvaddstr(ed.vp.h - 1, 0, search_line.c_str());
+        attroff(A_REVERSE);
+        move(ed.vp.h - 1, (int)search_line.size());
     } else {
         std::string mode_str;
         switch (ed.mode) {

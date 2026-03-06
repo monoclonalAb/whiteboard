@@ -39,6 +39,11 @@ public:
     std::string cmd_buf;
     std::string status_msg;
 
+    // SEARCH mode
+    std::string search_buf;
+    std::string last_search;
+    bool search_forward = true;
+
     // Clipboard and undo
     Clipboard clipboard;
     UndoStack undo_stack;
@@ -60,4 +65,6 @@ private:
     void do_yy();
     void do_paste();
     void execute_command(const std::string& cmd);
+    void search_key(int key);
+    bool do_find_next(bool forward);
 };
