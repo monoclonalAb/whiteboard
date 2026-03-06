@@ -1,0 +1,3 @@
+/Users/ericzheng/Desktop/whiteboard/build/CMakeFiles/whiteboard.dir
+/Users/ericzheng/Desktop/whiteboard/build/CMakeFiles/edit_cache.dir
+/Users/ericzheng/Desktop/whiteboard/build/CMakeFiles/rebuild_cache.dir
