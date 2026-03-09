@@ -1,123 +1,139 @@
-  Terminal Whiteboard — C++ Design Plan
+Terminal Whiteboard — C++ TUI Whiteboard
 
-  Core Concept
+Core Concept
 
-  A TUI application with an infinite 2D sparse canvas rendered through a fixed terminal viewport, with full vim modal editing.
+A TUI application with an infinite 2D sparse canvas rendered through a fixed terminal viewport, with vim modal editing.
 
-  ---
-  Architecture
+---
+Building
+
+  mkdir -p build && cd build && cmake .. && make
+  ./whiteboard [filename]
+
+---
+Architecture
 
   src/
-    main.cpp              - Entry point, event loop
-    canvas.hpp/cpp        - Sparse infinite canvas (hash map)
-    viewport.hpp/cpp      - Viewport: pan/zoom over canvas
-    renderer.hpp/cpp      - ncurses rendering layer
-    editor.hpp/cpp        - Top-level editor state machine
-    input.hpp/cpp         - Raw key parsing
-    modes.hpp             - Mode enum (NORMAL, INSERT, VISUAL, COMMAND)
-    keybindings.hpp/cpp   - Key→action dispatch
-    commands.hpp/cpp      - :colon command parser
-    undo.hpp/cpp          - Undo/redo stack
-    serialization.hpp/cpp - Save/load canvas
+    main.cpp              - Entry point, event loop, signal handling
+    canvas.hpp            - Cell struct, row-major Canvas type alias
+    editor.hpp/cpp        - Editor state machine, all mode handlers
+    renderer.hpp/cpp      - ncurses rendering layer, minimap
+    modes.hpp             - Mode enum (NORMAL, INSERT, VISUAL, COMMAND, SEARCH, BOX)
+    undo.hpp              - Undo/redo stack (header-only)
+    serialization.hpp/cpp - Save/load canvas to file
   CMakeLists.txt
 
-  ---
-  Data Structures
+---
+Data Structures
 
-  Canvas — sparse, infinite:
-  struct Cell { char ch; short color_pair; attr_t attrs; };
-  using Canvas = std::unordered_map<std::pair<int,int>, Cell, PairHash>;
+  Canvas — row-major sparse map, sorted by (y, x):
+    struct Cell { chtype ch; short color_pair; };
+    using Row    = std::map<int, Cell>;       // x → Cell
+    using Canvas = std::map<int, Row>;        // y → Row
 
   Viewport — window into canvas:
-  struct Viewport {
-      int canvas_x, canvas_y;   // top-left corner in canvas coords
-      int width, height;         // terminal dimensions
-  };
+    struct Viewport { int x, y, w, h; };
 
   Cursor — canvas coordinates (not screen):
-  struct Cursor { int x, y; };
+    struct Cursor { int x, y; };
 
-  ---
-  Modes & Keybindings
+  Clipboard — relative-coordinate cell storage for yank/paste:
+    struct Clipboard { vector<pair<pair<int,int>, Cell>> cells; bool is_line_yank; bool valid; };
 
-  ┌─────────┬───────────┬───────────────────────────────────┐
-  │  Mode   │    Key    │              Action               │
-  ├─────────┼───────────┼───────────────────────────────────┤
-  │ NORMAL  │ h/j/k/l   │ move cursor                       │
-  ├─────────┼───────────┼───────────────────────────────────┤
-  │ NORMAL  │ H/J/K/L   │ pan viewport (detach from cursor) │
-  ├─────────┼───────────┼───────────────────────────────────┤
-  │ NORMAL  │ i/a/o/O   │ enter INSERT                      │
-  ├─────────┼───────────┼───────────────────────────────────┤
-  │ NORMAL  │ v         │ enter VISUAL                      │
-  ├─────────┼───────────┼───────────────────────────────────┤
-  │ NORMAL  │ :         │ enter COMMAND                     │
-  ├─────────┼───────────┼───────────────────────────────────┤
-  │ NORMAL  │ x         │ delete char                       │
-  ├─────────┼───────────┼───────────────────────────────────┤
-  │ NORMAL  │ dd        │ delete line                       │
-  ├─────────┼───────────┼───────────────────────────────────┤
-  │ NORMAL  │ yy/p      │ yank/paste line                   │
-  ├─────────┼───────────┼───────────────────────────────────┤
-  │ NORMAL  │ u/Ctrl+r  │ undo/redo                         │
-  ├─────────┼───────────┼───────────────────────────────────┤
-  │ NORMAL  │ zz        │ center viewport on cursor         │
-  ├─────────┼───────────┼───────────────────────────────────┤
-  │ NORMAL  │ Ctrl+d/u  │ half-page scroll                  │
-  ├─────────┼───────────┼───────────────────────────────────┤
-  │ NORMAL  │ gg/G      │ jump to top/bottom of content     │
-  ├─────────┼───────────┼───────────────────────────────────┤
-  │ NORMAL  │ 0/$       │ start/end of line                 │
-  ├─────────┼───────────┼───────────────────────────────────┤
-  │ INSERT  │ Esc       │ back to NORMAL                    │
-  ├─────────┼───────────┼───────────────────────────────────┤
-  │ INSERT  │ any char  │ write to canvas at cursor         │
-  ├─────────┼───────────┼───────────────────────────────────┤
-  │ VISUAL  │ y/d       │ yank/delete selection             │
-  ├─────────┼───────────┼───────────────────────────────────┤
-  │ COMMAND │ :w        │ save                              │
-  ├─────────┼───────────┼───────────────────────────────────┤
-  │ COMMAND │ :q/:q!    │ quit                              │
-  ├─────────┼───────────┼───────────────────────────────────┤
-  │ COMMAND │ :goto x y │ teleport cursor                   │
-  ├─────────┼───────────┼───────────────────────────────────┤
-  │ COMMAND │ :clear    │ clear canvas                      │
-  └─────────┴───────────┴───────────────────────────────────┘
+---
+Modes & Keybindings
 
-  ---
-  Rendering Loop
+  NORMAL mode:
+    h/j/k/l (or arrows) - move cursor
+    H/J/K/L             - pan viewport (detach from cursor)
+    i                    - enter INSERT at cursor
+    a                    - enter INSERT after cursor
+    o                    - enter INSERT on next line
+    O                    - enter INSERT on previous line
+    v                    - enter VISUAL mode
+    b                    - enter BOX drawing mode
+    :                    - enter COMMAND mode
+    /                    - search forward
+    ?                    - search backward
+    n/N                  - next/previous search match
+    x                    - delete char at cursor
+    dd                   - delete entire row
+    yy                   - yank entire row
+    p                    - paste clipboard
+    u                    - undo
+    Ctrl+r               - redo
+    zz                   - center viewport on cursor
+    Ctrl+d / Ctrl+u      - half-page scroll down/up
+    gg / G               - jump to top/bottom of content
+    0 / $                - jump to column 0 / end of row content
+    m                    - toggle minimap
+    q                    - quit
+    Ctrl+C               - force quit
 
-  while (running):
-    1. get terminal size → update viewport
-    2. for each visible (screen_x, screen_y):
-         canvas_coord = (viewport.x + screen_x, viewport.y + screen_y)
-         draw canvas[canvas_coord] or space
-    3. draw status bar: mode | cursor coords | filename
-    4. position terminal cursor at (cursor - viewport)
-    5. poll input → dispatch to current mode handler
-    6. repeat
+  INSERT mode:
+    Esc                  - back to NORMAL
+    Arrows               - move cursor
+    Backspace            - delete char behind cursor
+    Enter                - move to next line, column 0
+    Any printable char   - write to canvas, advance cursor
 
-  ---
-  Phases
+  VISUAL mode:
+    h/j/k/l (or arrows) - extend selection
+    y                    - yank selection to clipboard
+    d                    - delete selection
+    Esc                  - cancel, back to NORMAL
 
-  ┌─────────────────────┬────────────────────────────────────────────────────────────────────────────────────────────────┐
-  │        Phase        │                                             Scope                                              │
-  ├─────────────────────┼────────────────────────────────────────────────────────────────────────────────────────────────┤
-  │ 1 — Foundation      │ ncurses setup, canvas, viewport, hjkl movement, INSERT text input, Esc/i switching, status bar │
-  ├─────────────────────┼────────────────────────────────────────────────────────────────────────────────────────────────┤
-  │ 2 — Vim Core        │ VISUAL mode, :COMMAND mode, dd/yy/p, undo/redo                                                 │
-  ├─────────────────────┼────────────────────────────────────────────────────────────────────────────────────────────────┤
-  │ 3 — Canvas Features │ Viewport pan (H/J/K/L), zz centering, gg/G/0/$, Ctrl+d/u, search /?                            │
-  ├─────────────────────┼────────────────────────────────────────────────────────────────────────────────────────────────┤
-  │ 4 — Persistence     │ :w/:e save/load, simple text-coordinate file format                                            │
-  ├─────────────────────┼────────────────────────────────────────────────────────────────────────────────────────────────┤
-  │ 5 — Polish          │ Colors, box-drawing mode, minimap, mouse support                                               │
-  └─────────────────────┴────────────────────────────────────────────────────────────────────────────────────────────────┘
+  BOX mode:
+    h/j/k/l (or arrows) - draw box-drawing characters (auto-joins corners/tees)
+    Esc                  - back to NORMAL
 
-  ---
-  Dependencies
+  COMMAND mode (:):
+    :w [filename]        - save canvas
+    :e <filename>        - load canvas
+    :wq                  - save and quit
+    :q / :q!             - quit
+    :goto x y            - teleport cursor
+    :clear               - clear entire canvas
+    :color [name|num]    - show or set active color
+                           colors: default, red, green, yellow, blue, magenta, cyan, white (0-7)
+
+  SEARCH mode (/ or ?):
+    Type pattern, Enter  - search (substring match across row content)
+    Esc                  - cancel
+
+  Mouse:
+    Left click           - move cursor to clicked position
+    Scroll up/down       - scroll viewport
+
+---
+Features
+
+  - Infinite sparse 2D canvas (no fixed bounds)
+  - Row-major sorted storage for efficient row/range operations
+  - Vim-style modal editing (6 modes)
+  - Box-drawing mode with auto-joining corners, tees, and crossings
+  - 8 foreground colors (applied in INSERT and BOX modes)
+  - Minimap overlay (top-right corner, shows canvas bounds and viewport position)
+  - Incremental search with wrapping (forward / and backward ?)
+  - Undo/redo (full canvas snapshots)
+  - Clipboard with line-yank and rectangular (visual) yank/paste
+  - File persistence (text format: "x y token color_pair" per cell, supports box-drawing chars)
+  - Mouse support (click to move, scroll to pan)
+  - Auto-scroll margin when cursor approaches viewport edges
+  - Terminal resize handling
+
+---
+File Format
+
+  One cell per line: x y token color_pair
+  - token is the ASCII char for printable chars, or ~NAME for box-drawing (e.g., ~HLINE, ~ULCORNER)
+  - color_pair is optional (defaults to 0)
+  - Lines starting with # are ignored
+
+---
+Dependencies
 
   - ncurses (terminal rendering)
-  - CMake (build)
-  - C++17 (structured bindings, std::optional, etc.)
+  - CMake >= 3.15
+  - C++17
 
