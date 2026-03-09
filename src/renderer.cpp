@@ -46,11 +46,13 @@ void Renderer::render_minimap(const Editor& ed) {
     // Compute canvas bounding box, seeded with the current viewport
     int min_cx = ed.vp.x,              max_cx = ed.vp.x + ed.vp.w - 1;
     int min_cy = ed.vp.y,              max_cy = ed.vp.y + ed.vp.h - 1;
-    for (auto& [pos, cell] : ed.canvas) {
-        min_cx = std::min(min_cx, pos.first);
-        max_cx = std::max(max_cx, pos.first);
-        min_cy = std::min(min_cy, pos.second);
-        max_cy = std::max(max_cy, pos.second);
+    for (auto& [y, row] : ed.canvas) {
+        min_cy = std::min(min_cy, y);
+        max_cy = std::max(max_cy, y);
+        if (!row.empty()) {
+            min_cx = std::min(min_cx, row.begin()->first);
+            max_cx = std::max(max_cx, row.rbegin()->first);
+        }
     }
 
     float sx = (float)MM_W / (max_cx - min_cx + 1);
@@ -58,11 +60,13 @@ void Renderer::render_minimap(const Editor& ed) {
 
     // Build set of occupied minimap pixels in one O(n) pass
     std::set<std::pair<int,int>> occ;
-    for (auto& [pos, cell] : ed.canvas) {
-        int mx = (int)((pos.first  - min_cx) * sx);
-        int my = (int)((pos.second - min_cy) * sy);
-        if (mx >= 0 && mx < MM_W && my >= 0 && my < MM_H)
-            occ.insert({mx, my});
+    for (auto& [y, row] : ed.canvas) {
+        for (auto& [x, cell] : row) {
+            int mx = (int)((x  - min_cx) * sx);
+            int my = (int)((y  - min_cy) * sy);
+            if (mx >= 0 && mx < MM_W && my >= 0 && my < MM_H)
+                occ.insert({mx, my});
+        }
     }
 
     // Viewport rectangle in minimap coordinates
@@ -123,18 +127,26 @@ void Renderer::render(const Editor& ed) {
     }
 
     for (int sy = 0; sy < canvas_rows; sy++) {
+        int cy = ed.vp.y + sy;
+        auto rit = ed.canvas.find(cy);
+
         for (int sx = 0; sx < ed.vp.w; sx++) {
             int cx = ed.vp.x + sx;
-            int cy = ed.vp.y + sy;
 
             bool highlighted = in_visual &&
                 cx >= vis_min_x && cx <= vis_max_x &&
                 cy >= vis_min_y && cy <= vis_max_y;
 
-            auto it = ed.canvas.find({cx, cy});
-            if (it != ed.canvas.end() || highlighted) {
-                short  cp = (it != ed.canvas.end()) ? it->second.color_pair : 0;
-                chtype ch = (it != ed.canvas.end()) ? it->second.ch : ' ';
+            const Cell* cell = nullptr;
+            if (rit != ed.canvas.end()) {
+                auto cit = rit->second.find(cx);
+                if (cit != rit->second.end())
+                    cell = &cit->second;
+            }
+
+            if (cell || highlighted) {
+                short  cp = cell ? cell->color_pair : 0;
+                chtype ch = cell ? cell->ch : ' ';
 
                 if (highlighted) attron(A_REVERSE);
                 if (cp > 0)      attron(COLOR_PAIR(cp));

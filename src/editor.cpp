@@ -2,9 +2,7 @@
 #include "serialization.hpp"
 #include <ncurses.h>
 #include <algorithm>
-#include <climits>
 #include <cstdio>
-#include <map>
 
 static constexpr int SCROLL_MARGIN = 3;
 
@@ -54,11 +52,20 @@ static chtype pick_box_char(bool L, bool R, bool U, bool D) {
 }
 
 // Returns {L,R,U,D} connections for (x,y) derived purely from its canvas neighbors.
+// Helper: look up a single cell in the row-major canvas.
+static const Cell* cell_at(const Canvas& canvas, int x, int y) {
+    auto rit = canvas.find(y);
+    if (rit == canvas.end()) return nullptr;
+    auto cit = rit->second.find(x);
+    if (cit == rit->second.end()) return nullptr;
+    return &cit->second;
+}
+
 static std::tuple<bool,bool,bool,bool> cell_connections(const Canvas& canvas, int x, int y) {
     bool L = false, R = false, U = false, D = false;
     auto get = [&](int nx, int ny) -> chtype {
-        auto it = canvas.find({nx, ny});
-        return (it != canvas.end() && is_box_char(it->second.ch)) ? it->second.ch : 0;
+        auto* c = cell_at(canvas, nx, ny);
+        return (c && is_box_char(c->ch)) ? c->ch : 0;
     };
     if (chtype c = get(x-1, y); c && connects_right(c)) L = true;
     if (chtype c = get(x+1, y); c && connects_left(c))  R = true;
@@ -96,19 +103,15 @@ void Editor::ensure_visible() {
 
 void Editor::do_dd() {
     save_undo();
-    for (auto it = canvas.begin(); it != canvas.end(); ) {
-        if (it->first.second == cursor.y)
-            it = canvas.erase(it);
-        else
-            ++it;
-    }
+    canvas.erase(cursor.y);
 }
 
 void Editor::do_yy() {
     clipboard.cells.clear();
-    for (auto& [pos, cell] : canvas) {
-        if (pos.second == cursor.y)
-            clipboard.cells.push_back({{pos.first, 0}, cell});
+    auto rit = canvas.find(cursor.y);
+    if (rit != canvas.end()) {
+        for (auto& [x, cell] : rit->second)
+            clipboard.cells.push_back({{x, 0}, cell});
     }
     clipboard.is_line_yank = true;
     clipboard.valid = true;
@@ -120,11 +123,11 @@ void Editor::do_paste() {
     if (clipboard.is_line_yank) {
         int target_y = cursor.y + 1;
         for (auto& [rel, cell] : clipboard.cells)
-            canvas[{rel.first, target_y}] = cell;
+            canvas[target_y][rel.first] = cell;
         cursor.y = target_y;
     } else {
         for (auto& [rel, cell] : clipboard.cells)
-            canvas[{cursor.x + rel.first, cursor.y + rel.second}] = cell;
+            canvas[cursor.y + rel.second][cursor.x + rel.first] = cell;
     }
     ensure_visible();
 }
@@ -148,15 +151,15 @@ void Editor::update_box_cell(int x, int y, int going_dx, int going_dy) {
     auto [nL, nR, nU, nD] = cell_connections(canvas, x, y);
     L |= nL; R |= nR; U |= nU; D |= nD;
 
-    canvas[{x, y}] = Cell{pick_box_char(L, R, U, D), active_color};
+    canvas[y][x] = Cell{pick_box_char(L, R, U, D), active_color};
 
     // Update immediate neighbors so their junction type stays correct
     std::pair<int,int> neighbors[] = {{x-1,y}, {x+1,y}, {x,y-1}, {x,y+1}};
     for (auto [nx, ny] : neighbors) {
-        auto it = canvas.find({nx, ny});
-        if (it != canvas.end() && is_box_char(it->second.ch)) {
+        auto* c = cell_at(canvas, nx, ny);
+        if (c && is_box_char(c->ch)) {
             auto [cL, cR, cU, cD] = cell_connections(canvas, nx, ny);
-            it->second.ch = pick_box_char(cL, cR, cU, cD);
+            canvas[ny][nx].ch = pick_box_char(cL, cR, cU, cD);
         }
     }
 }
@@ -209,10 +212,7 @@ void Editor::normal_key(int key) {
             if (pending_key == 'd') do_dd();
             else if (pending_key == 'y') do_yy();
             else if (pending_key == 'g') {
-                int min_y = INT_MAX;
-                for (auto& [pos, cell] : canvas)
-                    if (pos.second < min_y) min_y = pos.second;
-                cursor.y = (min_y == INT_MAX) ? 0 : min_y;
+                cursor.y = canvas.empty() ? 0 : canvas.begin()->first;
                 cursor.x = 0;
                 ensure_visible();
             } else if (pending_key == 'z') {
@@ -275,10 +275,15 @@ void Editor::normal_key(int key) {
             mode = Mode::COMMAND;
             break;
 
-        case 'x':
+        case 'x': {
             save_undo();
-            canvas.erase({cursor.x, cursor.y});
+            auto rit = canvas.find(cursor.y);
+            if (rit != canvas.end()) {
+                rit->second.erase(cursor.x);
+                if (rit->second.empty()) canvas.erase(rit);
+            }
             break;
+        }
 
         case 'd':
             pending_key = 'd';
@@ -317,10 +322,7 @@ void Editor::normal_key(int key) {
 
         // Jump to bottom of content
         case 'G': {
-            int max_y = INT_MIN;
-            for (auto& [pos, cell] : canvas)
-                if (pos.second > max_y) max_y = pos.second;
-            cursor.y = (max_y == INT_MIN) ? 0 : max_y;
+            cursor.y = canvas.empty() ? 0 : canvas.rbegin()->first;
             cursor.x = 0;
             ensure_visible();
             break;
@@ -332,10 +334,11 @@ void Editor::normal_key(int key) {
             ensure_visible();
             break;
         case '$': {
-            int max_x = INT_MIN;
-            for (auto& [pos, cell] : canvas)
-                if (pos.second == cursor.y && pos.first > max_x) max_x = pos.first;
-            if (max_x != INT_MIN) { cursor.x = max_x; ensure_visible(); }
+            auto rit = canvas.find(cursor.y);
+            if (rit != canvas.end() && !rit->second.empty()) {
+                cursor.x = rit->second.rbegin()->first;
+                ensure_visible();
+            }
             break;
         }
 
@@ -389,7 +392,11 @@ void Editor::insert_key(int key) {
         case KEY_BACKSPACE: case 127:
             if (cursor.x > 0) {
                 cursor.x--;
-                canvas.erase({cursor.x, cursor.y});
+                auto rit = canvas.find(cursor.y);
+                if (rit != canvas.end()) {
+                    rit->second.erase(cursor.x);
+                    if (rit->second.empty()) canvas.erase(rit);
+                }
                 ensure_visible();
             }
             break;
@@ -400,7 +407,7 @@ void Editor::insert_key(int key) {
             break;
         default:
             if (key >= 32 && key <= 126) {
-                canvas[{cursor.x, cursor.y}] = Cell{(chtype)key, active_color};
+                canvas[cursor.y][cursor.x] = Cell{(chtype)key, active_color};
                 move_cursor(1, 0);
             }
             break;
@@ -422,10 +429,13 @@ void Editor::visual_key(int key) {
             int min_y = std::min(visual_anchor.y, cursor.y);
             int max_y = std::max(visual_anchor.y, cursor.y);
             clipboard.cells.clear();
-            for (auto& [pos, cell] : canvas) {
-                if (pos.first >= min_x && pos.first <= max_x &&
-                    pos.second >= min_y && pos.second <= max_y)
-                    clipboard.cells.push_back({{pos.first - min_x, pos.second - min_y}, cell});
+            for (auto rit = canvas.lower_bound(min_y);
+                 rit != canvas.end() && rit->first <= max_y; ++rit) {
+                for (auto cit = rit->second.lower_bound(min_x);
+                     cit != rit->second.end() && cit->first <= max_x; ++cit) {
+                    clipboard.cells.push_back(
+                        {{cit->first - min_x, rit->first - min_y}, cit->second});
+                }
             }
             clipboard.is_line_yank = false;
             clipboard.valid = true;
@@ -438,12 +448,15 @@ void Editor::visual_key(int key) {
             int max_x = std::max(visual_anchor.x, cursor.x);
             int min_y = std::min(visual_anchor.y, cursor.y);
             int max_y = std::max(visual_anchor.y, cursor.y);
-            for (auto it = canvas.begin(); it != canvas.end(); ) {
-                if (it->first.first  >= min_x && it->first.first  <= max_x &&
-                    it->first.second >= min_y && it->first.second <= max_y)
-                    it = canvas.erase(it);
+            for (auto rit = canvas.lower_bound(min_y);
+                 rit != canvas.end() && rit->first <= max_y; ) {
+                for (auto cit = rit->second.lower_bound(min_x);
+                     cit != rit->second.end() && cit->first <= max_x; )
+                    cit = rit->second.erase(cit);
+                if (rit->second.empty())
+                    rit = canvas.erase(rit);
                 else
-                    ++it;
+                    ++rit;
             }
             mode = Mode::NORMAL;
             break;
@@ -582,24 +595,18 @@ void Editor::search_key(int key) {
 
 bool Editor::do_find_next(bool forward) {
     if (last_search.empty()) return false;
-
-    // Build per-row sorted content (ASCII only)
-    std::map<int, std::map<int, char>> rows;
-    for (auto& [pos, cell] : canvas) {
-        chtype ch = cell.ch;
-        if (ch >= 32 && ch <= 126)
-            rows[pos.second][pos.first] = (char)ch;
-    }
-
-    if (rows.empty()) return false;
+    if (canvas.empty()) return false;
 
     std::vector<std::pair<int,int>> matches;
-    for (auto& [y, row] : rows) {
+    for (auto& [y, row] : canvas) {
         if (row.empty()) continue;
         int min_x = row.begin()->first;
         int max_x = row.rbegin()->first;
         std::string s(max_x - min_x + 1, ' ');
-        for (auto& [x, ch] : row) s[x - min_x] = ch;
+        for (auto& [x, cell] : row) {
+            chtype ch = cell.ch;
+            if (ch >= 32 && ch <= 126) s[x - min_x] = (char)ch;
+        }
 
         size_t p = 0;
         while ((p = s.find(last_search, p)) != std::string::npos) {
@@ -613,7 +620,7 @@ bool Editor::do_find_next(bool forward) {
         return false;
     }
 
-    std::sort(matches.begin(), matches.end());
+    // matches are already sorted since canvas is a sorted map
     std::pair<int,int> cur = {cursor.y, cursor.x};
 
     if (forward) {

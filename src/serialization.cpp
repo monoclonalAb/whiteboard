@@ -43,10 +43,12 @@ static chtype token_to_chtype(const std::string& tok) {
 bool save_canvas(const Canvas& canvas, const std::string& filename) {
     std::ofstream f(filename);
     if (!f) return false;
-    for (auto& [pos, cell] : canvas) {
-        std::string tok = chtype_to_token(cell.ch);
-        if (tok.empty()) continue;
-        f << pos.first << ' ' << pos.second << ' ' << tok << ' ' << cell.color_pair << '\n';
+    for (auto& [y, row] : canvas) {
+        for (auto& [x, cell] : row) {
+            std::string tok = chtype_to_token(cell.ch);
+            if (tok.empty()) continue;
+            f << x << ' ' << y << ' ' << tok << ' ' << cell.color_pair << '\n';
+        }
     }
     return f.good();
 }
@@ -66,7 +68,7 @@ bool load_canvas(Canvas& canvas, const std::string& filename) {
         ss >> cp; // optional; stays 0 if absent (backward compatible)
         chtype ch = token_to_chtype(tok);
         if (ch == 0) continue;
-        canvas[{x, y}] = Cell{ch, cp};
+        canvas[y][x] = Cell{ch, cp};
     }
     return true;
 }
