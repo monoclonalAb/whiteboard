@@ -1,7 +1,11 @@
 #include "renderer.hpp"
 #include <ncurses.h>
 #include <algorithm>
+#include <set>
 #include <string>
+
+static constexpr int MM_W = 18; // minimap inner width
+static constexpr int MM_H = 8;  // minimap inner height
 
 void Renderer::init() {
     initscr();
@@ -9,6 +13,22 @@ void Renderer::init() {
     noecho();
     keypad(stdscr, TRUE);
     curs_set(1);
+
+    // Colors
+    if (has_colors()) {
+        start_color();
+        use_default_colors();
+        init_pair(1, COLOR_RED,     -1);
+        init_pair(2, COLOR_GREEN,   -1);
+        init_pair(3, COLOR_YELLOW,  -1);
+        init_pair(4, COLOR_BLUE,    -1);
+        init_pair(5, COLOR_MAGENTA, -1);
+        init_pair(6, COLOR_CYAN,    -1);
+        init_pair(7, COLOR_WHITE,   -1);
+    }
+
+    // Mouse
+    mousemask(ALL_MOUSE_EVENTS | REPORT_MOUSE_POSITION, nullptr);
 }
 
 void Renderer::cleanup() {
@@ -17,6 +37,74 @@ void Renderer::cleanup() {
 
 void Renderer::update_size(Viewport& vp) {
     getmaxyx(stdscr, vp.h, vp.w);
+}
+
+void Renderer::render_minimap(const Editor& ed) {
+    // Require minimum terminal size to show the minimap
+    if (ed.vp.w < MM_W + 6 || ed.vp.h < MM_H + 5) return;
+
+    // Compute canvas bounding box, seeded with the current viewport
+    int min_cx = ed.vp.x,              max_cx = ed.vp.x + ed.vp.w - 1;
+    int min_cy = ed.vp.y,              max_cy = ed.vp.y + ed.vp.h - 1;
+    for (auto& [pos, cell] : ed.canvas) {
+        min_cx = std::min(min_cx, pos.first);
+        max_cx = std::max(max_cx, pos.first);
+        min_cy = std::min(min_cy, pos.second);
+        max_cy = std::max(max_cy, pos.second);
+    }
+
+    float sx = (float)MM_W / (max_cx - min_cx + 1);
+    float sy = (float)MM_H / (max_cy - min_cy + 1);
+
+    // Build set of occupied minimap pixels in one O(n) pass
+    std::set<std::pair<int,int>> occ;
+    for (auto& [pos, cell] : ed.canvas) {
+        int mx = (int)((pos.first  - min_cx) * sx);
+        int my = (int)((pos.second - min_cy) * sy);
+        if (mx >= 0 && mx < MM_W && my >= 0 && my < MM_H)
+            occ.insert({mx, my});
+    }
+
+    // Viewport rectangle in minimap coordinates
+    int vx0 = std::max(0,        (int)((ed.vp.x - min_cx) * sx));
+    int vx1 = std::min(MM_W - 1, (int)((ed.vp.x + ed.vp.w - 1 - min_cx) * sx));
+    int vy0 = std::max(0,        (int)((ed.vp.y - min_cy) * sy));
+    int vy1 = std::min(MM_H - 1, (int)((ed.vp.y + ed.vp.h - 1 - min_cy) * sy));
+
+    // Cursor in minimap coordinates
+    int cmx = std::max(0, std::min(MM_W - 1, (int)((ed.cursor.x - min_cx) * sx)));
+    int cmy = std::max(0, std::min(MM_H - 1, (int)((ed.cursor.y - min_cy) * sy)));
+
+    // Screen position: top-right corner, inner area starts at col bx, row 1
+    int bx = ed.vp.w - MM_W - 2; // left col of inner cells
+    int by = 0;                   // top row (border row)
+
+    // Draw border
+    mvaddch(by,            bx - 1,    ACS_ULCORNER);
+    mvaddch(by,            bx + MM_W, ACS_URCORNER);
+    mvaddch(by + MM_H + 1, bx - 1,    ACS_LLCORNER);
+    mvaddch(by + MM_H + 1, bx + MM_W, ACS_LRCORNER);
+    for (int i = 0; i < MM_W; i++) {
+        mvaddch(by,            bx + i, ACS_HLINE);
+        mvaddch(by + MM_H + 1, bx + i, ACS_HLINE);
+    }
+    for (int i = 1; i <= MM_H; i++) {
+        mvaddch(by + i, bx - 1,    ACS_VLINE);
+        mvaddch(by + i, bx + MM_W, ACS_VLINE);
+    }
+
+    // Fill minimap cells
+    for (int my = 0; my < MM_H; my++) {
+        for (int mx = 0; mx < MM_W; mx++) {
+            bool in_vp  = (mx >= vx0 && mx <= vx1 && my >= vy0 && my <= vy1);
+            chtype ch   = occ.count({mx, my}) ? '.' : ' ';
+            if (mx == cmx && my == cmy) ch = '@';
+
+            if (in_vp) attron(A_REVERSE);
+            mvaddch(by + 1 + my, bx + mx, ch);
+            if (in_vp) attroff(A_REVERSE);
+        }
+    }
 }
 
 void Renderer::render(const Editor& ed) {
@@ -43,17 +131,23 @@ void Renderer::render(const Editor& ed) {
                 cx >= vis_min_x && cx <= vis_max_x &&
                 cy >= vis_min_y && cy <= vis_max_y;
 
-            if (highlighted) attron(A_REVERSE);
-
             auto it = ed.canvas.find({cx, cy});
-            if (it != ed.canvas.end())
-                mvaddch(sy, sx, it->second.ch);
-            else if (highlighted)
-                mvaddch(sy, sx, ' ');
+            if (it != ed.canvas.end() || highlighted) {
+                short  cp = (it != ed.canvas.end()) ? it->second.color_pair : 0;
+                chtype ch = (it != ed.canvas.end()) ? it->second.ch : ' ';
 
-            if (highlighted) attroff(A_REVERSE);
+                if (highlighted) attron(A_REVERSE);
+                if (cp > 0)      attron(COLOR_PAIR(cp));
+                mvaddch(sy, sx, ch);
+                if (cp > 0)      attroff(COLOR_PAIR(cp));
+                if (highlighted) attroff(A_REVERSE);
+            }
         }
     }
+
+    // Minimap overlay
+    if (ed.show_minimap)
+        render_minimap(ed);
 
     // Status bar
     attron(A_REVERSE);
@@ -76,11 +170,20 @@ void Renderer::render(const Editor& ed) {
             case Mode::NORMAL: mode_str = "-- NORMAL --"; break;
             case Mode::INSERT: mode_str = "-- INSERT --"; break;
             case Mode::VISUAL: mode_str = "-- VISUAL --"; break;
+            case Mode::BOX:    mode_str = "-- BOX --";    break;
             default: break;
         }
-        std::string center_str = ed.status_msg.empty()
-            ? ""
-            : ed.status_msg;
+        // Active color indicator in mode string
+        if (ed.active_color > 0) {
+            static const char* cnames[] = {"","RED","GRN","YEL","BLU","MAG","CYN","WHT"};
+            mode_str += " [";
+            mode_str += cnames[ed.active_color];
+            mode_str += "]";
+        }
+        if (!ed.filename.empty())
+            mode_str += " " + ed.filename;
+
+        std::string center_str = ed.status_msg;
         std::string pos_str = " x:" + std::to_string(ed.cursor.x)
                             + " y:" + std::to_string(ed.cursor.y) + " ";
 

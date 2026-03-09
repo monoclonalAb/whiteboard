@@ -10,6 +10,7 @@ add_executable(whiteboard
     src/main.cpp
     src/editor.cpp
     src/renderer.cpp
+    src/serialization.cpp
 )
 
 target_include_directories(whiteboard PRIVATE src ${CURSES_INCLUDE_DIRS})

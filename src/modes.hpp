@@ -1,3 +1,3 @@
 #pragma once
 
-enum class Mode { NORMAL, INSERT, VISUAL, COMMAND, SEARCH };
+enum class Mode { NORMAL, INSERT, VISUAL, COMMAND, SEARCH, BOX };

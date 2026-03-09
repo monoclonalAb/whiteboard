@@ -3,6 +3,7 @@
 #include <cstdlib>
 #include "editor.hpp"
 #include "renderer.hpp"
+#include "serialization.hpp"
 
 static Renderer* g_renderer = nullptr;
 
@@ -11,7 +12,7 @@ static void signal_handler(int) {
     std::exit(0);
 }
 
-int main() {
+int main(int argc, char* argv[]) {
     Renderer renderer;
     g_renderer = &renderer;
     std::signal(SIGTERM, signal_handler);
@@ -19,6 +20,10 @@ int main() {
     renderer.init();
 
     Editor editor;
+    if (argc > 1) {
+        editor.filename = argv[1];
+        load_canvas(editor.canvas, editor.filename); // ok if file doesn't exist yet
+    }
     renderer.update_size(editor.vp);
     editor.ensure_visible();
 

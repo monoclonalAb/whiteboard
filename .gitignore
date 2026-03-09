@@ -23,3 +23,6 @@ CTestTestfile.cmake
 *.swp
 *.swo
 *~
+
+# Claude Documentation
+docs/

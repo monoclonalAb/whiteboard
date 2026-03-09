@@ -20,7 +20,7 @@ struct Viewport {
 struct Clipboard {
     // cells stored as (dx, dy) relative coords
     std::vector<std::pair<std::pair<int,int>, Cell>> cells;
-    bool is_line_yank = false; // yy: paste preserves absolute x positions
+    bool is_line_yank = false;
     bool valid = false;
 };
 
@@ -35,6 +35,9 @@ public:
     // VISUAL mode
     Cursor    visual_anchor;
 
+    // Persistence
+    std::string filename;
+
     // COMMAND mode
     std::string cmd_buf;
     std::string status_msg;
@@ -44,6 +47,16 @@ public:
     std::string last_search;
     bool search_forward = true;
 
+    // Phase 5: Colors — active color applied to new cells in INSERT/BOX modes
+    short active_color = 0;
+
+    // Phase 5: Minimap toggle
+    bool show_minimap = false;
+
+    // Phase 5: BOX mode — last movement direction
+    int box_last_dx = 0;
+    int box_last_dy = 0;
+
     // Clipboard and undo
     Clipboard clipboard;
     UndoStack undo_stack;
@@ -52,12 +65,15 @@ public:
     void ensure_visible();
 
 private:
-    int pending_key = 0; // for dd, yy double-key sequences
+    int pending_key = 0;
 
     void normal_key(int key);
     void insert_key(int key);
     void visual_key(int key);
     void command_key(int key);
+    void box_key(int key);
+    void update_box_cell(int x, int y, int going_dx, int going_dy);
+    void handle_mouse();
 
     void move_cursor(int dx, int dy);
     void save_undo();

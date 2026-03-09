@@ -1,10 +1,12 @@
 #pragma once
+#include <ncurses.h>
 #include <unordered_map>
 #include <utility>
 #include <functional>
 
 struct Cell {
-    char ch;
+    chtype ch         = ' ';
+    short  color_pair = 0;
 };
 
 struct PairHash {
